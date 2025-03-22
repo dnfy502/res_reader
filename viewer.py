@@ -5,16 +5,16 @@ from PIL import Image, ImageTk, ImageDraw, ImageDraw
 import threading
 
 # Fix for PyMuPDF import - use explicit import to avoid module conflict
+# try:
+#     import PyMuPDF as fitz
+# except ImportError:
 try:
-    import PyMuPDF as fitz
+    # Alternative import - full path
+    import pymupdf as fitz
 except ImportError:
-    try:
-        # Alternative import - full path
-        import pymupdf as fitz
-    except ImportError:
-        print("Error: PyMuPDF library not found.")
-        print("Please install it using: pip install PyMuPDF")
-        sys.exit(1)
+    print("Error: PyMuPDF library not found.")
+    print("Please install it using: pip install PyMuPDF")
+    sys.exit(1)
 
 class PDFViewer:
     def __init__(self, root, pdf_path=None):
