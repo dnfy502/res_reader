@@ -36,6 +36,10 @@ class PDFViewer:
         self.text_instances = []  # Will store text block positions
         self.highlighted_areas = []  # Will store canvas rectangles for highlights
         
+        # Add multi-selection variables
+        self.is_appending = False  # Track if we're appending to selection (Ctrl pressed)
+        self.previous_selections = []  # Store previous selections for appending
+        
         # Frame for controls
         self.control_frame = tk.Frame(root)
         self.control_frame.pack(side=tk.BOTTOM, fill=tk.X)
@@ -112,6 +116,12 @@ class PDFViewer:
         self.canvas.bind("<ButtonRelease-1>", self.on_mouse_up)
         self.canvas.bind("<B1-Motion>", self.on_mouse_drag)
         
+        # Track Ctrl key state for multi-selection
+        self.root.bind("<KeyPress-Control_L>", self.ctrl_pressed)
+        self.root.bind("<KeyPress-Control_R>", self.ctrl_pressed)
+        self.root.bind("<KeyRelease-Control_L>", self.ctrl_released)
+        self.root.bind("<KeyRelease-Control_R>", self.ctrl_released)
+        
         # Bind trackpad/mouse wheel for zooming
         self.canvas.bind("<Control-MouseWheel>", self.on_mousewheel_zoom)  # Windows/Linux
         self.canvas.bind("<Control-Button-4>", self.on_mousewheel_zoom)    # Linux
@@ -158,12 +168,14 @@ class PDFViewer:
         if not self.doc:
             return
         
-        # Clear canvas and reset text selection
+        # Clear canvas and reset text selection if not appending
         self.canvas.delete("all")
         self.text_instances = []
-        self.selected_text = ""
-        self.update_selection_label()
-        self.update_text_display()
+        if not self.is_appending:
+            self.selected_text = ""
+            self.previous_selections = []
+            self.update_selection_label()
+            self.update_text_display()
         
         # Get the current page
         current_page = self.doc[self.current_page]
@@ -370,15 +382,32 @@ class PDFViewer:
                         'bbox': (x0, y0, x1, y1)
                     })
     
+    def ctrl_pressed(self, event):
+        """Handle Ctrl key press for multi-selection"""
+        self.is_appending = True
+    
+    def ctrl_released(self, event):
+        """Handle Ctrl key release"""
+        self.is_appending = False
+    
     def on_mouse_down(self, event):
         """Handle mouse button press for text selection"""
-        self.clear_highlights()
         # Adjust coordinates for canvas scrolling
         canvas_x = self.canvas.canvasx(event.x)
         canvas_y = self.canvas.canvasy(event.y)
+        
+        # If not appending (Ctrl not pressed), clear previous selections
+        if not self.is_appending:
+            self.clear_highlights()
+            self.previous_selections = []
+            self.selected_text = ""
+        else:
+            # If appending, save current selection before starting a new one
+            if self.selected_text:
+                self.previous_selections.append(self.selected_text)
+        
         self.selection_start = (canvas_x, canvas_y)
         self.selection_end = None
-        self.selected_text = ""
         self.update_selection_label()
     
     def on_mouse_drag(self, event):
@@ -404,8 +433,6 @@ class PDFViewer:
         if not self.selection_start or not self.selection_end:
             return
             
-        self.clear_highlights()
-        
         # Create a selection rectangle
         x1, y1 = self.selection_start
         x2, y2 = self.selection_end
@@ -418,6 +445,11 @@ class PDFViewer:
         
         selection_rect = (x1, y1, x2, y2)
         selected_texts = []
+        current_selection = ""
+        
+        # If we're not clearing previous selections, don't clear highlights
+        if not self.is_appending:
+            self.clear_highlights()
         
         # Check which text blocks intersect with the selection rectangle
         for text_obj in self.text_instances:
@@ -427,15 +459,33 @@ class PDFViewer:
             # Check for intersection
             if self.rectangles_intersect(selection_rect, bbox):
                 selected_texts.append(text)
-                # Highlight the selected text with a more visible color
+                
+                # Use different highlight colors for multi-selection
+                highlight_color = "#FF7F50" # Default color
+                outline_color = "#FF4500"   # Default outline
+                
+                if self.is_appending:
+                    # Use a different color for appended selections
+                    highlight_color = "#90EE90"  # Light green
+                    outline_color = "#32CD32"    # Lime green
+                
+                # Highlight the selected text
                 highlight = self.canvas.create_rectangle(
                     bbox[0], bbox[1], bbox[2], bbox[3],
-                    fill="#FF7F50", outline="#FF4500", stipple="gray25"  # Bright coral color with orange-red outline
+                    fill=highlight_color, outline=outline_color, stipple="gray25"
                 )
                 self.highlighted_areas.append(highlight)
         
         # Join all selected text with spaces
-        self.selected_text = " ".join(selected_texts)
+        current_selection = " ".join(selected_texts)
+        
+        # If appending, combine current selection with previous selections
+        if self.is_appending:
+            combined_selections = self.previous_selections + [current_selection]
+            self.selected_text = " ".join(filter(bool, combined_selections))
+        else:
+            self.selected_text = current_selection
+            
         self.update_selection_label()
         self.update_text_display()
     
