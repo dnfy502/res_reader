@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Research PDF Viewer</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            overflow: hidden;
+        }
+        #pdf-container {
+            width: 100%;
+            height: 100vh;
+            border: none;
+        }
+        #file-selector {
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            z-index: 1000;
+            background: white;
+            padding: 5px;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+        }
+        #selection-info {
+            position: fixed;
+            bottom: 10px;
+            left: 10px;
+            z-index: 1000;
+            background: rgba(255, 255, 255, 0.95);
+            padding: 10px;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+            max-width: 80%;
+            max-height: 30vh;
+            overflow-y: auto;
+            display: none;
+            border: 1px solid #ccc;
+        }
+        #selected-text {
+            margin: 0;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .close-btn {
+            float: right;
+            cursor: pointer;
+            font-weight: bold;
+            color: #555;
+        }
+        #debug-panel {
+            position: fixed;
+            top: 60px;
+            right: 10px;
+            background: rgba(240, 240, 240, 0.9);
+            padding: 10px;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            max-width: 300px;
+            max-height: 200px;
+            overflow-y: auto;
+            z-index: 1000;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        #toggle-debug {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            z-index: 1001;
+            padding: 5px 10px;
+            background: #f0f0f0;
+            border: 1px solid #ccc;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <div id="file-selector">
+        <label for="pdf-file">Select PDF: </label>
+        <select id="pdf-file" onchange="loadPdf(this.value)">
+            <option value="">Choose a file</option>
+        </select>
+    </div>
+    
+    <iframe id="pdf-container" src=""></iframe>
+    
+    <div id="selection-info">
+        <span class="close-btn" onclick="hideSelectionInfo()">✕</span>
+        <h4>Selected Text:</h4>
+        <p id="selected-text"></p>
+    </div>
+
+    <button id="toggle-debug" onclick="toggleDebug()">Show Debug</button>
+    <div id="debug-panel" style="display: none;">
+        <h4>Debug Information</h4>
+        <div id="debug-log"></div>
+        <button onclick="testSelection()">Test Selection</button>
+    </div>
+    
+    <script>
+        // Function to load the list of PDF files
+        async function loadPdfList() {
+            try {
+                const response = await fetch('/api/pdf-list');
+                const files = await response.json();
+                const selector = document.getElementById('pdf-file');
+                
+                files.forEach(file => {
+                    const option = document.createElement('option');
+                    option.value = file;
+                    option.textContent = file;
+                    selector.appendChild(option);
+                });
+            } catch (error) {
+                console.error('Error loading PDF list:', error);
+            }
+        }
+
+        // Function to load a PDF file
+        function loadPdf(filename) {
+            if (!filename) return;
+            
+            const iframe = document.getElementById('pdf-container');
+            iframe.src = `/pdf/${filename}`;
+            
+            // Listen for message events from iframe (if any)
+            window.addEventListener('message', handleIframeMessage);
+            
+            // Add document-level listeners for selection
+            setupSelectionListeners();
+            
+            logDebug('PDF loaded: ' + filename);
+        }
+        
+        // Set up document-level selection listeners
+        function setupSelectionListeners() {
+            // Remove any existing listeners to prevent duplicates
+            document.removeEventListener('mouseup', checkForSelection);
+            document.removeEventListener('keyup', checkForSelection);
+            
+            // Add the listeners
+            document.addEventListener('mouseup', checkForSelection);
+            document.addEventListener('keyup', checkForSelection);
+            
+            logDebug('Document selection listeners added');
+        }
+        
+        // Handle messages from iframe (if any)
+        function handleIframeMessage(event) {
+            if (event.data && event.data.type === 'textSelection') {
+                showSelectedText(event.data.text);
+            }
+        }
+        
+        // Check for any selection in the document
+        function checkForSelection() {
+            const selection = window.getSelection();
+            const selectedText = selection.toString().trim();
+            
+            if (selectedText) {
+                showSelectedText(selectedText);
+            }
+        }
+        
+        // Display the selected text and send to backend
+        function showSelectedText(text) {
+            if (!text) return;
+            
+            // Display the selected text
+            const textElement = document.getElementById('selected-text');
+            textElement.textContent = text;
+            
+            // Show the panel
+            const panel = document.getElementById('selection-info');
+            panel.style.display = 'block';
+            
+            // Send to backend
+            sendSelectedText(text);
+            
+            logDebug('Text selected: ' + text.substring(0, 50) + (text.length > 50 ? '...' : ''));
+        }
+        
+        // Function to hide the selection info panel
+        function hideSelectionInfo() {
+            document.getElementById('selection-info').style.display = 'none';
+        }
+
+        // Function to send selected text to the backend
+        async function sendSelectedText(text) {
+            try {
+                const response = await fetch('/api/selection', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ text })
+                });
+                
+                logDebug('Selection sent to server');
+            } catch (error) {
+                console.error('Error sending selection:', error);
+            }
+        }
+        
+        // Function to toggle debug panel
+        function toggleDebug() {
+            const panel = document.getElementById('debug-panel');
+            const button = document.getElementById('toggle-debug');
+            if (panel.style.display === 'none') {
+                panel.style.display = 'block';
+                button.textContent = 'Hide Debug';
+                logDebug('Debug panel opened');
+            } else {
+                panel.style.display = 'none';
+                button.textContent = 'Show Debug';
+            }
+        }
+        
+        // Function to log debug messages
+        function logDebug(message) {
+            const log = document.getElementById('debug-log');
+            const time = new Date().toLocaleTimeString();
+            log.innerHTML += `<div>[${time}] ${message}</div>`;
+            log.scrollTop = log.scrollHeight;
+            console.log(message);
+        }
+        
+        // Function to test selection display
+        function testSelection() {
+            const testText = "This is a test selection from the debug panel.";
+            logDebug("Testing selection display");
+            showSelectedText(testText);
+        }
+        
+        // Initial setup
+        window.onload = function() {
+            loadPdfList();
+            logDebug('Application initialized');
+        };
+    </script>
+</body>
+</html>
