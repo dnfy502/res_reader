@@ -1,6 +1,6 @@
 import sys
 import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext, ttk
+from tkinter import filedialog, messagebox
 from PIL import Image, ImageTk
 import threading
 
@@ -20,7 +20,7 @@ class PDFViewer:
     def __init__(self, root, pdf_path=None):
         self.root = root
         self.root.title("Research Paper Viewer")
-        self.root.geometry("1000x900")  # Increased width to accommodate the notes panel
+        self.root.geometry("800x900")
         
         # PDF document and current page
         self.doc = None
@@ -67,36 +67,9 @@ class PDFViewer:
         self.copy_btn = tk.Button(self.control_frame, text="Copy", command=self.copy_selected_text)
         self.copy_btn.pack(side=tk.LEFT, padx=5, pady=5)
         
-        # Main content area - split into PDF view and notes panel using PanedWindow
-        self.content_frame = ttk.PanedWindow(root, orient=tk.HORIZONTAL)
-        self.content_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        
-        # Canvas frame for PDF display
-        self.canvas_frame = tk.Frame(self.content_frame)
-        
-        # Notes panel
-        self.notes_frame = tk.Frame(self.content_frame, bg="#f0f0f0", relief=tk.GROOVE, bd=2)
-        
-        # Add both frames to the paned window
-        self.content_frame.add(self.canvas_frame, weight=70)  # Default 70% of space
-        self.content_frame.add(self.notes_frame, weight=30)   # Default 30% of space
-        
-        # Label for the notes panel
-        notes_label = tk.Label(self.notes_frame, text="Selected Text", font=("Arial", 10, "bold"), bg="#f0f0f0")
-        notes_label.pack(side=tk.TOP, pady=(10, 5), anchor=tk.W, padx=5)
-        
-        # Text display for selected text
-        self.text_display = scrolledtext.ScrolledText(self.notes_frame, height=10, wrap=tk.WORD, font=("Arial", 9))
-        self.text_display.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=5, pady=5)
-        self.text_display.config(state=tk.DISABLED)  # Make it read-only initially
-        
-        # Label for the notes input
-        notes_input_label = tk.Label(self.notes_frame, text="Notes", font=("Arial", 10, "bold"), bg="#f0f0f0")
-        notes_input_label.pack(side=tk.TOP, pady=(10, 5), anchor=tk.W, padx=5)
-        
-        # Text input for notes
-        self.notes_input = scrolledtext.ScrolledText(self.notes_frame, height=10, wrap=tk.WORD, font=("Arial", 9))
-        self.notes_input.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        # Canvas for PDF display
+        self.canvas_frame = tk.Frame(root)
+        self.canvas_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         
         self.canvas = tk.Canvas(self.canvas_frame, bg="gray")
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -289,7 +262,6 @@ class PDFViewer:
         # Join all selected text with spaces
         self.selected_text = " ".join(selected_texts)
         self.update_selection_label()
-        self.update_text_display()
     
     def rectangles_intersect(self, rect1, rect2):
         """Check if two rectangles intersect"""
@@ -320,15 +292,6 @@ class PDFViewer:
             # Truncate long selections for display
             display_text = self.selected_text[:30] + "..." if len(self.selected_text) > 30 else self.selected_text
             self.selection_label.config(text=f"Selected: {display_text}")
-    
-    def update_text_display(self):
-        """Update the text display in the notes panel with the selected text"""
-        # Enable editing, clear the display, insert new text, then disable again
-        self.text_display.config(state=tk.NORMAL)
-        self.text_display.delete(1.0, tk.END)
-        if self.selected_text:
-            self.text_display.insert(tk.END, self.selected_text)
-        self.text_display.config(state=tk.DISABLED)
     
     def copy_selected_text(self):
         """Copy selected text to clipboard"""
