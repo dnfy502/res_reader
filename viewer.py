@@ -1,7 +1,7 @@
 import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageDraw, ImageDraw
 import threading
 
 # Fix for PyMuPDF import - use explicit import to avoid module conflict
@@ -27,7 +27,8 @@ class PDFViewer:
         self.current_page = 0
         self.total_pages = 0
         self.zoom_level = 1.0
-        
+        self.page_spacing = 20  # Space between different page segments in pixels
+        # Text selection variables
         # Text selection variables
         self.selected_text = ""
         self.selection_start = None
@@ -162,31 +163,178 @@ class PDFViewer:
         self.text_instances = []
         self.selected_text = ""
         self.update_selection_label()
+        self.update_text_display()
         
-        # Get the page
-        page = self.doc[self.current_page]
+        # Get the current page
+        current_page = self.doc[self.current_page]
+        
+        # Create a blank image to merge content onto
+        merged_image = None
+        merged_height = 0
+        y_offset = 0
         
         # Get the zoom matrix
         zoom_matrix = fitz.Matrix(self.zoom_level, self.zoom_level)
         
-        # Get the pixmap
-        pix = page.get_pixmap(matrix=zoom_matrix)
+        # Load the bottom part of the previous page if it exists
+        if self.current_page > 0:
+            prev_page = self.doc[self.current_page - 1]
+            prev_image, prev_height, prev_texts = self.render_page_segment(prev_page, zoom_matrix, 'bottom')
+            if prev_image:
+                merged_image = prev_image
+                merged_height = prev_height
+                y_offset = prev_height + self.page_spacing  # Add spacing after prev page segment
+                
+                # Add text blocks from previous page (with adjusted y-coordinates)
+                for text_obj in prev_texts:
+                    self.text_instances.append(text_obj)
         
-        # Convert to PIL Image
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        # Load the current page
+        current_image, current_height, current_texts = self.render_page_segment(current_page, zoom_matrix, 'full')
+        
+        # If we don't have an image yet (no previous page), start with current page
+        if merged_image is None:
+            merged_image = current_image
+            merged_height = current_height
+        else:
+            # Create a new taller image with spacing and paste current page below previous page's bottom half
+            new_height = merged_height + self.page_spacing + current_height
+            new_image = Image.new("RGB", (current_image.width, new_height), "white")
+            new_image.paste(merged_image, (0, 0))
+            
+            # Draw a separator line
+            separator_y = merged_height + self.page_spacing // 2
+            draw = ImageDraw.Draw(new_image)
+            draw.line([(0, separator_y), (current_image.width, separator_y)], fill="#CCCCCC", width=2)
+            
+            new_image.paste(current_image, (0, y_offset))
+            merged_image = new_image
+            merged_height = new_height
+        
+        # Adjust y-coordinates for text blocks from current page
+        for text_obj in current_texts:
+            text = text_obj['text']
+            x0, y0, x1, y1 = text_obj['bbox']
+            self.text_instances.append({
+                'text': text,
+                'bbox': (x0, y0 + y_offset, x1, y1 + y_offset)
+            })
+        
+        # Set new y_offset to include current page and spacing
+        y_offset = merged_height + self.page_spacing
+        
+        # Load the top part of the next page if it exists
+        if self.current_page < self.total_pages - 1:
+            next_page = self.doc[self.current_page + 1]
+            next_image, next_height, next_texts = self.render_page_segment(next_page, zoom_matrix, 'top')
+            if next_image:
+                # Create a new taller image with spacing and paste next page's top half below
+                new_height = merged_height + self.page_spacing + next_height
+                new_image = Image.new("RGB", (next_image.width, new_height), "white")
+                new_image.paste(merged_image, (0, 0))
+                
+                # Draw a separator line
+                separator_y = merged_height + self.page_spacing // 2
+                draw = ImageDraw.Draw(new_image)
+                draw.line([(0, separator_y), (next_image.width, separator_y)], fill="#CCCCCC", width=2)
+                
+                new_image.paste(next_image, (0, y_offset))
+                merged_image = new_image
+                
+                # Add text blocks from next page (with adjusted y-coordinates)
+                for text_obj in next_texts:
+                    text = text_obj['text']
+                    x0, y0, x1, y1 = text_obj['bbox']
+                    self.text_instances.append({
+                        'text': text,
+                        'bbox': (x0, y0 + y_offset, x1, y1 + y_offset)
+                    })
         
         # Convert to PhotoImage
-        self.photo = ImageTk.PhotoImage(image=img)
+        self.photo = ImageTk.PhotoImage(image=merged_image)
         
         # Display image
         self.canvas.create_image(0, 0, anchor=tk.NW, image=self.photo)
         
-        # Extract text blocks with their positions
-        text_page = page.get_text("dict")
-        self.process_text_blocks(text_page, zoom_matrix)
+        # Set scrollregion to the size of the merged image
+        self.canvas.config(scrollregion=(0, 0, merged_image.width, merged_image.height))
+    
+    def render_page_segment(self, page, zoom_matrix, segment='full'):
+        """Render a segment of a page and return the image and text blocks
         
-        # Set scrollregion to the size of the rendered page image
-        self.canvas.config(scrollregion=(0, 0, pix.width, pix.height))
+        Args:
+            page: The page to render
+            zoom_matrix: The zoom matrix to apply
+            segment: 'full', 'top', or 'bottom'
+            
+        Returns:
+            tuple: (PIL Image, height of image, list of text blocks)
+        """
+        # Get page dimensions
+        page_rect = page.rect
+        
+        # Create a clip rectangle based on segment type
+        if segment == 'top':
+            # Top half of the page
+            clip = fitz.Rect(page_rect.x0, page_rect.y0, 
+                            page_rect.x1, page_rect.y0 + page_rect.height/2)
+        elif segment == 'bottom':
+            # Bottom half of the page
+            clip = fitz.Rect(page_rect.x0, page_rect.y0 + page_rect.height/2, 
+                            page_rect.x1, page_rect.y1)
+        else:
+            # Full page
+            clip = page_rect
+            
+        # Get the pixmap with the clip rectangle
+        pix = page.get_pixmap(matrix=zoom_matrix, clip=clip)
+        
+        # Convert to PIL Image
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        
+        # Extract text blocks with their positions
+        text_page = page.get_text("dict", clip=clip)
+        text_blocks = []
+        
+        # Process text blocks
+        if 'blocks' in text_page:
+            for block in text_page['blocks']:
+                if 'lines' not in block:
+                    continue
+                    
+                for line in block['lines']:
+                    if 'spans' not in line:
+                        continue
+                        
+                    for span in line['spans']:
+                        if 'text' not in span or not span['text'].strip():
+                            continue
+                        
+                        # Get text and its rectangle coords
+                        text = span['text']
+                        bbox = span['bbox']
+                        
+                        # Apply zoom to the coordinates
+                        x0, y0, x1, y1 = bbox
+                        
+                        # Adjust coordinates to be relative to the clip rectangle
+                        if segment == 'bottom':
+                            y0 -= page_rect.height/2
+                            y1 -= page_rect.height/2
+                        
+                        # Apply zoom
+                        x0 *= self.zoom_level
+                        y0 *= self.zoom_level
+                        x1 *= self.zoom_level
+                        y1 *= self.zoom_level
+                        
+                        # Store text with its position
+                        text_blocks.append({
+                            'text': text,
+                            'bbox': (x0, y0, x1, y1)
+                        })
+                        
+        return img, pix.height, text_blocks
     
     def process_text_blocks(self, text_page, zoom_matrix):
         """Process and store text block information for selection"""
@@ -367,7 +515,7 @@ class PDFViewer:
             scroll_amount = -1 if event.delta > 0 else 1
         
         # Adjust scroll speed
-        scroll_units = 50  # Increased for better scrolling speed
+        scroll_units = 2  # Increased for better scrolling speed
         self.canvas.yview_scroll(scroll_amount * scroll_units, "units")
         return "break"  # Prevent event propagation
     
