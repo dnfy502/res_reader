@@ -158,7 +158,8 @@ class PDFViewer:
         text_page = page.get_text("dict")
         self.process_text_blocks(text_page, zoom_matrix)
         
-        self.canvas.config(scrollregion=self.canvas.bbox(tk.ALL))
+        # Set scrollregion to the size of the rendered page image
+        self.canvas.config(scrollregion=(0, 0, pix.width, pix.height))
     
     def process_text_blocks(self, text_page, zoom_matrix):
         """Process and store text block information for selection"""
@@ -197,7 +198,10 @@ class PDFViewer:
     def on_mouse_down(self, event):
         """Handle mouse button press for text selection"""
         self.clear_highlights()
-        self.selection_start = (event.x, event.y)
+        # Adjust coordinates for canvas scrolling
+        canvas_x = self.canvas.canvasx(event.x)
+        canvas_y = self.canvas.canvasy(event.y)
+        self.selection_start = (canvas_x, canvas_y)
         self.selection_end = None
         self.selected_text = ""
         self.update_selection_label()
@@ -205,13 +209,19 @@ class PDFViewer:
     def on_mouse_drag(self, event):
         """Handle mouse drag for text selection"""
         if self.selection_start:
-            self.selection_end = (event.x, event.y)
+            # Adjust coordinates for canvas scrolling
+            canvas_x = self.canvas.canvasx(event.x)
+            canvas_y = self.canvas.canvasy(event.y)
+            self.selection_end = (canvas_x, canvas_y)
             self.update_selection()
     
     def on_mouse_up(self, event):
         """Handle mouse button release for text selection"""
         if self.selection_start:
-            self.selection_end = (event.x, event.y)
+            # Adjust coordinates for canvas scrolling
+            canvas_x = self.canvas.canvasx(event.x)
+            canvas_y = self.canvas.canvasy(event.y)
+            self.selection_end = (canvas_x, canvas_y)
             self.update_selection()
     
     def update_selection(self):
@@ -242,10 +252,10 @@ class PDFViewer:
             # Check for intersection
             if self.rectangles_intersect(selection_rect, bbox):
                 selected_texts.append(text)
-                # Highlight the selected text
+                # Highlight the selected text with a more visible color
                 highlight = self.canvas.create_rectangle(
                     bbox[0], bbox[1], bbox[2], bbox[3],
-                    fill="lightyellow", outline="", stipple="gray12"
+                    fill="#FF7F50", outline="#FF4500", stipple="gray25"  # Bright coral color with orange-red outline
                 )
                 self.highlighted_areas.append(highlight)
         
@@ -303,25 +313,26 @@ class PDFViewer:
         
         # Re-render the page with the new zoom level
         self.render_page()
+        return "break"  # Prevent event propagation
     
     def on_mousewheel_scroll(self, event):
         """Handle mousewheel scrolling"""
         # Determine scroll direction and amount
-        if event.num == 4 or (hasattr(event, 'delta') and event.delta > 0):
-            scroll_amount = -1  # Scroll up
-        elif event.num == 5 or (hasattr(event, 'delta') and event.delta < 0):
-            scroll_amount = 1   # Scroll down
-        else:
-            return
-            
-        # Adjust scroll speed based on platform
-        if hasattr(event, 'delta'):
-            # For Windows, scale the scroll amount
-            scroll_amount = int(scroll_amount * abs(event.delta) / 120)
+        scroll_amount = 0
         
-        # Scroll the canvas with appropriate units
-        scroll_units = 30  # Adjust this value for faster/slower scrolling
+        # Handle different platforms
+        if event.num == 4:
+            scroll_amount = -1  # Scroll up (Linux)
+        elif event.num == 5:
+            scroll_amount = 1   # Scroll down (Linux)
+        elif hasattr(event, 'delta'):
+            # For Windows/macOS
+            scroll_amount = -1 if event.delta > 0 else 1
+        
+        # Adjust scroll speed
+        scroll_units = 50  # Increased for better scrolling speed
         self.canvas.yview_scroll(scroll_amount * scroll_units, "units")
+        return "break"  # Prevent event propagation
     
     def scroll_start(self, event):
         """Start scrolling with middle mouse button"""
@@ -362,7 +373,7 @@ class PDFViewer:
 
 def main():
     root = tk.Tk()
-    pdf_path = 'Dataset_Second.pdf'
+    pdf_path = 'pdfs/Dataset_Second.pdf'
     
     # Check if a file path was provided as a command-line argument
     if len(sys.argv) > 1:
