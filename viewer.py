@@ -29,7 +29,6 @@ class PDFViewer:
         self.zoom_level = 1.0
         self.page_spacing = 20  # Space between different page segments in pixels
         # Text selection variables
-        # Text selection variables
         self.selected_text = ""
         self.selection_start = None
         self.selection_end = None
@@ -40,16 +39,28 @@ class PDFViewer:
         self.is_appending = False  # Track if we're appending to selection (Ctrl pressed)
         self.previous_selections = []  # Store previous selections for appending
         
+        # Variables for efficient continuous scrolling
+        self.visible_page_range = 3  # Number of pages to keep in memory (current + adjacent pages)
+        self.page_positions = []     # Store y-positions of each page
+        self.page_heights = []       # Store heights of each page
+        self.current_visible_pages = set()  # Currently rendered pages
+        self.previously_visible_pages = set()  # Pages that were visible in the last render
+        self.last_scroll_pos = 0.0   # Last scroll position for detection of scroll direction
+        self.is_rendering = False    # Flag to prevent multiple simultaneous renders
+        
         # Frame for controls
         self.control_frame = tk.Frame(root)
         self.control_frame.pack(side=tk.BOTTOM, fill=tk.X)
         
-        # Navigation buttons
-        self.prev_btn = tk.Button(self.control_frame, text="Previous", command=self.prev_page)
-        self.prev_btn.pack(side=tk.LEFT, padx=5, pady=5)
-        
-        self.next_btn = tk.Button(self.control_frame, text="Next", command=self.next_page)
-        self.next_btn.pack(side=tk.LEFT, padx=5, pady=5)
+        # Remove Previous/Next buttons and replace with a page slider
+        self.page_slider = ttk.Scale(
+            self.control_frame, 
+            from_=1, 
+            to=1,  # Will be updated when PDF is loaded
+            orient=tk.HORIZONTAL,
+            command=self.on_page_slider_change
+        )
+        self.page_slider.pack(side=tk.LEFT, padx=5, pady=5, fill=tk.X, expand=True)
         
         self.page_label = tk.Label(self.control_frame, text="Page: 0/0")
         self.page_label.pack(side=tk.LEFT, padx=5, pady=5)
@@ -149,10 +160,24 @@ class PDFViewer:
             self.total_pages = len(self.doc)
             self.current_page = 0
             self.root.title(f"Research Paper Viewer - {pdf_path}")
+            
+            # Reset page tracking variables
+            self.page_positions = []
+            self.page_heights = []
+            self.current_visible_pages = set()
+            
+            # Update slider range
+            self.page_slider.configure(to=self.total_pages)
+            self.page_slider.set(1)  # Set to first page
+            
+            # Pre-calculate page heights at current zoom level
+            self.precalculate_page_heights()
+            
             self.update_page_label()
             self.render_page()
         except Exception as e:
             print(f"Error opening PDF: {e}")
+            messagebox.showerror("Error", f"Failed to open PDF: {e}")
     
     def open_pdf(self):
         """Open file dialog to select a PDF file"""
@@ -163,10 +188,42 @@ class PDFViewer:
         if pdf_path:
             self.load_pdf(pdf_path)
     
-    def render_page(self):
-        """Render the current page with text information for selection"""
+    def precalculate_page_heights(self):
+        """Pre-calculate heights of all pages at current zoom level"""
         if not self.doc:
             return
+            
+        self.page_heights = []
+        self.page_positions = [0]  # First page starts at position 0
+        
+        total_height = 0
+        
+        # Calculate heights and positions for each page without actually rendering
+        for page_num in range(self.total_pages):
+            page = self.doc[page_num]
+            
+            # Get page dimensions and calculate height based on aspect ratio
+            page_rect = page.rect
+            width = page_rect.width * self.zoom_level
+            height = page_rect.height * self.zoom_level
+            
+            self.page_heights.append(height)
+            
+            # Calculate position of next page
+            total_height += height + self.page_spacing
+            if page_num < self.total_pages - 1:
+                self.page_positions.append(total_height)
+    
+    def render_page(self):
+        """Render visible pages based on current scroll position"""
+        if not self.doc:
+            return
+            
+        # Prevent multiple simultaneous renders
+        if self.is_rendering:
+            return
+            
+        self.is_rendering = True
         
         # Clear canvas and reset text selection if not appending
         self.canvas.delete("all")
@@ -177,210 +234,292 @@ class PDFViewer:
             self.update_selection_label()
             self.update_text_display()
         
-        # Get the current page
-        current_page = self.doc[self.current_page]
-        
-        # Create a blank image to merge content onto
-        merged_image = None
-        merged_height = 0
-        y_offset = 0
+        # Determine which pages should be visible
+        self.update_visible_pages()
         
         # Get the zoom matrix
         zoom_matrix = fitz.Matrix(self.zoom_level, self.zoom_level)
         
-        # Load the bottom part of the previous page if it exists
-        if self.current_page > 0:
-            prev_page = self.doc[self.current_page - 1]
-            prev_image, prev_height, prev_texts = self.render_page_segment(prev_page, zoom_matrix, 'bottom')
-            if prev_image:
-                merged_image = prev_image
-                merged_height = prev_height
-                y_offset = prev_height + self.page_spacing  # Add spacing after prev page segment
-                
-                # Add text blocks from previous page (with adjusted y-coordinates)
-                for text_obj in prev_texts:
-                    self.text_instances.append(text_obj)
-        
-        # Load the current page
-        current_image, current_height, current_texts = self.render_page_segment(current_page, zoom_matrix, 'full')
-        
-        # If we don't have an image yet (no previous page), start with current page
-        if merged_image is None:
-            merged_image = current_image
-            merged_height = current_height
-        else:
-            # Create a new taller image with spacing and paste current page below previous page's bottom half
-            new_height = merged_height + self.page_spacing + current_height
-            new_image = Image.new("RGB", (current_image.width, new_height), "white")
-            new_image.paste(merged_image, (0, 0))
+        # Calculate total height needed for all pages
+        if not self.page_heights:  # If heights haven't been calculated yet
+            self.precalculate_page_heights()
             
-            # Draw a separator line
-            separator_y = merged_height + self.page_spacing // 2
-            draw = ImageDraw.Draw(new_image)
-            draw.line([(0, separator_y), (current_image.width, separator_y)], fill="#CCCCCC", width=2)
+        total_height = self.page_positions[-1] + self.page_heights[-1] if self.page_heights else 0
+        
+        # Get visible region
+        visible_top = self.canvas.canvasy(0)
+        visible_bottom = visible_top + self.canvas.winfo_height()
+        
+        # Create placeholders for all pages
+        max_width = 0
+        for page_num in range(self.total_pages):
+            page = self.doc[page_num]
+            page_rect = page.rect
+            width = page_rect.width * self.zoom_level
+            max_width = max(max_width, width)
             
-            new_image.paste(current_image, (0, y_offset))
-            merged_image = new_image
-            merged_height = new_height
+            # Create page boundaries for all pages that are part of the document
+            y_offset = self.page_positions[page_num]
+            height = self.page_heights[page_num]
+            
+            # Create a white rectangle for ALL pages in the document
+            self.canvas.create_rectangle(
+                0, y_offset, max_width, y_offset + height,
+                fill="white", outline="#CCCCCC"
+            )
+            
+            # Add page number as text to ALL pages
+            self.canvas.create_text(
+                10, y_offset + 10, 
+                text=f"Page {page_num + 1}", 
+                fill="#888888", 
+                anchor="nw"
+            )
+            
+            # Draw a separator line after each page (except the last one)
+            if page_num < self.total_pages - 1:
+                separator_y = y_offset + height + self.page_spacing // 2
+                self.canvas.create_line(
+                    0, separator_y, max_width, separator_y,
+                    fill="#CCCCCC", width=2
+                )
         
-        # Adjust y-coordinates for text blocks from current page
-        for text_obj in current_texts:
-            text = text_obj['text']
-            x0, y0, x1, y1 = text_obj['bbox']
-            self.text_instances.append({
-                'text': text,
-                'bbox': (x0, y0 + y_offset, x1, y1 + y_offset)
-            })
+        # Set scrollregion to the size of the entire document
+        self.canvas.config(scrollregion=(0, 0, max_width, total_height))
         
-        # Set new y_offset to include current page and spacing
-        y_offset = merged_height + self.page_spacing
+        # Define the pages to render (both visible and the closest 3)
+        pages_to_render = self.current_visible_pages
         
-        # Load the top part of the next page if it exists
-        if self.current_page < self.total_pages - 1:
-            next_page = self.doc[self.current_page + 1]
-            next_image, next_height, next_texts = self.render_page_segment(next_page, zoom_matrix, 'top')
-            if next_image:
-                # Create a new taller image with spacing and paste next page's top half below
-                new_height = merged_height + self.page_spacing + next_height
-                new_image = Image.new("RGB", (next_image.width, new_height), "white")
-                new_image.paste(merged_image, (0, 0))
+        # Prioritize rendering order:
+        # 1. Current page
+        # 2. One page before and one page after current
+        # 3. Other visible pages
+        render_order = sorted(pages_to_render, key=lambda x: abs(x - self.current_page))
+        
+        # Render visible pages and closest 3 pages regardless of visibility
+        for page_num in render_order:
+            # Check if we already have this page rendered and cached
+            if hasattr(self, 'photo_images') and page_num in self.photo_images:
+                # If already cached, just display it on the canvas
+                y_offset = self.page_positions[page_num]
+                self.canvas.create_image(0, y_offset, anchor=tk.NW, image=self.photo_images[page_num])
                 
-                # Draw a separator line
-                separator_y = merged_height + self.page_spacing // 2
-                draw = ImageDraw.Draw(new_image)
-                draw.line([(0, separator_y), (next_image.width, separator_y)], fill="#CCCCCC", width=2)
-                
-                new_image.paste(next_image, (0, y_offset))
-                merged_image = new_image
-                
-                # Add text blocks from next page (with adjusted y-coordinates)
-                for text_obj in next_texts:
-                    text = text_obj['text']
-                    x0, y0, x1, y1 = text_obj['bbox']
-                    self.text_instances.append({
-                        'text': text,
-                        'bbox': (x0, y0 + y_offset, x1, y1 + y_offset)
-                    })
+                # If the page has text blocks already extracted, add them
+                if hasattr(self, 'page_text_blocks') and page_num in self.page_text_blocks:
+                    for text_block in self.page_text_blocks[page_num]:
+                        self.text_instances.append(text_block)
+            else:
+                # If not cached, render in background thread
+                threading.Thread(
+                    target=self.render_page_in_background,
+                    args=(page_num, zoom_matrix),
+                    daemon=True
+                ).start()
         
-        # Convert to PhotoImage
-        self.photo = ImageTk.PhotoImage(image=merged_image)
-        
-        # Display image
-        self.canvas.create_image(0, 0, anchor=tk.NW, image=self.photo)
-        
-        # Set scrollregion to the size of the merged image
-        self.canvas.config(scrollregion=(0, 0, merged_image.width, merged_image.height))
+        # Reset rendering flag after a short delay to prevent too frequent updates
+        self.root.after(100, self.reset_rendering_flag)
     
-    def render_page_segment(self, page, zoom_matrix, segment='full'):
-        """Render a segment of a page and return the image and text blocks
-        
-        Args:
-            page: The page to render
-            zoom_matrix: The zoom matrix to apply
-            segment: 'full', 'top', or 'bottom'
+    def reset_rendering_flag(self):
+        """Reset the rendering flag to allow new renders"""
+        self.is_rendering = False
+    
+    def render_page_in_background(self, page_num, zoom_matrix):
+        """Render a single page in the background thread"""
+        try:
+            # Get page position
+            y_offset = self.page_positions[page_num]
             
-        Returns:
-            tuple: (PIL Image, height of image, list of text blocks)
-        """
-        # Get page dimensions
-        page_rect = page.rect
-        
-        # Create a clip rectangle based on segment type
-        if segment == 'top':
-            # Top half of the page
-            clip = fitz.Rect(page_rect.x0, page_rect.y0, 
-                            page_rect.x1, page_rect.y0 + page_rect.height/2)
-        elif segment == 'bottom':
-            # Bottom half of the page
-            clip = fitz.Rect(page_rect.x0, page_rect.y0 + page_rect.height/2, 
-                            page_rect.x1, page_rect.y1)
-        else:
-            # Full page
-            clip = page_rect
+            # Render the page (we'll always render pages in visible_pages set)
+            page = self.doc[page_num]
             
-        # Get the pixmap with the clip rectangle
-        pix = page.get_pixmap(matrix=zoom_matrix, clip=clip)
-        
-        # Convert to PIL Image
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        
-        # Extract text blocks with their positions
-        text_page = page.get_text("dict", clip=clip)
-        text_blocks = []
-        
-        # Process text blocks
-        if 'blocks' in text_page:
-            for block in text_page['blocks']:
-                if 'lines' not in block:
-                    continue
-                    
-                for line in block['lines']:
-                    if 'spans' not in line:
+            # Render the page at the correct aspect ratio
+            pix = page.get_pixmap(matrix=zoom_matrix)
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            
+            # Extract text information
+            text_page = page.get_text("dict")
+            text_blocks = []
+            
+            # Process text blocks
+            if 'blocks' in text_page:
+                for block in text_page['blocks']:
+                    if 'lines' not in block:
                         continue
                         
-                    for span in line['spans']:
-                        if 'text' not in span or not span['text'].strip():
+                    for line in block['lines']:
+                        if 'spans' not in line:
                             continue
-                        
-                        # Get text and its rectangle coords
-                        text = span['text']
-                        bbox = span['bbox']
-                        
-                        # Apply zoom to the coordinates
-                        x0, y0, x1, y1 = bbox
-                        
-                        # Adjust coordinates to be relative to the clip rectangle
-                        if segment == 'bottom':
-                            y0 -= page_rect.height/2
-                            y1 -= page_rect.height/2
-                        
-                        # Apply zoom
-                        x0 *= self.zoom_level
-                        y0 *= self.zoom_level
-                        x1 *= self.zoom_level
-                        y1 *= self.zoom_level
-                        
-                        # Store text with its position
-                        text_blocks.append({
-                            'text': text,
-                            'bbox': (x0, y0, x1, y1)
-                        })
-                        
-        return img, pix.height, text_blocks
+                            
+                        for span in line['spans']:
+                            if 'text' not in span or not span['text'].strip():
+                                continue
+                            
+                            # Get text and its rectangle coords
+                            text = span['text']
+                            bbox = span['bbox']
+                            
+                            # Apply zoom
+                            x0, y0, x1, y1 = bbox
+                            x0 *= self.zoom_level
+                            y0 *= self.zoom_level
+                            x1 *= self.zoom_level
+                            y1 *= self.zoom_level
+                            
+                            # Adjust for page position
+                            y0 += y_offset
+                            y1 += y_offset
+                            
+                            # Store text with its position
+                            text_blocks.append({
+                                'text': text,
+                                'bbox': (x0, y0, x1, y1)
+                            })
+            
+            # Use tkinter's after method to safely update the UI from the main thread
+            self.root.after(0, lambda: self.update_canvas_with_page(page_num, img, text_blocks, y_offset))
+            
+        except Exception as e:
+            print(f"Error rendering page {page_num}: {e}")
     
-    def process_text_blocks(self, text_page, zoom_matrix):
-        """Process and store text block information for selection"""
-        if 'blocks' not in text_page:
+    def update_canvas_with_page(self, page_num, img, text_blocks, y_offset):
+        """Update the canvas with a rendered page (called from the main thread)"""
+        # Only continue if the page is still part of visible pages
+        if page_num not in self.current_visible_pages:
             return
             
-        for block in text_page['blocks']:
-            if 'lines' not in block:
-                continue
+        # Create a PhotoImage and keep a reference to prevent garbage collection
+        if not hasattr(self, 'photo_images'):
+            self.photo_images = {}
+            
+        # Store the image
+        self.photo_images[page_num] = ImageTk.PhotoImage(image=img)
+        
+        # Create text blocks storage if it doesn't exist
+        if not hasattr(self, 'page_text_blocks'):
+            self.page_text_blocks = {}
+            
+        # Store text blocks for this page
+        self.page_text_blocks[page_num] = text_blocks
+        
+        # Always display the page on the canvas (since it's in visible_pages)
+        self.canvas.create_image(0, y_offset, anchor=tk.NW, image=self.photo_images[page_num])
+        
+        # Add text blocks to the text_instances list
+        for text_block in text_blocks:
+            self.text_instances.append(text_block)
+    
+    def update_visible_pages(self):
+        """Determine which pages should be visible based on scroll position"""
+        if not self.doc or not self.page_positions:
+            return
+            
+        # Get current view position (what's visible in the canvas)
+        view_top = self.canvas.canvasy(0)  # Top of current view
+        view_height = self.canvas.winfo_height()
+        view_bottom = view_top + view_height  # Bottom of current view
+        
+        # Find which page is at the center of the view
+        center_y = view_top + (view_height / 2)
+        center_page = self.find_page_at_position(center_y)
+        
+        # Update current page
+        if center_page != self.current_page:
+            self.current_page = center_page
+            self.update_page_label()
+            # Update slider without triggering the callback
+            self.page_slider.set(self.current_page + 1)
+        
+        # Calculate range for visible pages based on what's actually in view
+        visible_pages = set()
+        for page_num in range(self.total_pages):
+            y_offset = self.page_positions[page_num]
+            height = self.page_heights[page_num]
+            
+            # Check if this page is visible or partially visible
+            if not (y_offset > view_bottom or y_offset + height < view_top):
+                visible_pages.add(page_num)
+        
+        # Always include the 3 closest pages centered on current_page
+        closest_pages = set(range(
+            max(0, self.current_page - 1),
+            min(self.total_pages, self.current_page + 2)
+        ))
+        
+        # Combine visible and closest pages for rendering
+        new_visible_pages = visible_pages.union(closest_pages)
+        
+        # Only update if the visible pages have changed
+        if new_visible_pages != self.current_visible_pages:
+            # Store the current visible pages
+            self.current_visible_pages = new_visible_pages
+            
+            # Identify pages that need to be unloaded
+            if hasattr(self, 'photo_images'):
+                keys_to_remove = [k for k in self.photo_images.keys() if k not in new_visible_pages]
+                for k in keys_to_remove:
+                    del self.photo_images[k]
+    
+    def find_page_at_position(self, y_position):
+        """Find which page contains the given y-position"""
+        if not self.page_positions:
+            return 0
+            
+        # Binary search to find the page
+        left = 0
+        right = len(self.page_positions) - 1
+        
+        while left <= right:
+            mid = (left + right) // 2
+            
+            # Check if position is on this page
+            page_top = self.page_positions[mid]
+            page_bottom = page_top + self.page_heights[mid]
+            
+            if page_top <= y_position < page_bottom:
+                return mid
+            elif y_position < page_top:
+                right = mid - 1
+            else:
+                left = mid + 1
                 
-            for line in block['lines']:
-                if 'spans' not in line:
-                    continue
-                    
-                for span in line['spans']:
-                    if 'text' not in span or not span['text'].strip():
-                        continue
-                    
-                    # Get text and its rectangle coords
-                    text = span['text']
-                    bbox = span['bbox']
-                    
-                    # Apply zoom to the coordinates
-                    x0, y0, x1, y1 = bbox
-                    x0 *= self.zoom_level
-                    y0 *= self.zoom_level
-                    x1 *= self.zoom_level
-                    y1 *= self.zoom_level
-                    
-                    # Store text with its position
-                    self.text_instances.append({
-                        'text': text,
-                        'bbox': (x0, y0, x1, y1)
-                    })
+        # If not found directly, return the closest page
+        return min(max(0, left), self.total_pages - 1)
+    
+    def on_page_slider_change(self, event):
+        """Handle page slider change"""
+        if not self.doc:
+            return
+            
+        # Get page number from slider
+        page_num = int(float(self.page_slider.get())) - 1
+        
+        # Scroll to that page
+        self.scroll_to_page(page_num)
+    
+    def scroll_to_page(self, page_num):
+        """Scroll to show the specified page"""
+        if not self.doc or not self.page_positions or page_num < 0 or page_num >= self.total_pages:
+            return
+            
+        # Calculate position to scroll to (the top of the page)
+        y_pos = self.page_positions[page_num]
+        
+        # Get total height of document
+        total_height = self.page_positions[-1] + self.page_heights[-1]
+        
+        # Scroll to position
+        self.canvas.yview_moveto(y_pos / total_height)
+        
+        # Update current page
+        self.current_page = page_num
+        self.update_page_label()
+        
+        # Reset rendering flag
+        self.is_rendering = False
+        
+        # Force a complete re-render to ensure all pages are displayed properly
+        self.update_visible_pages()
+        self.render_page()
     
     def ctrl_pressed(self, event):
         """Handle Ctrl key press for multi-selection"""
@@ -536,7 +675,9 @@ class PDFViewer:
             messagebox.showinfo("Copied", "Text copied to clipboard")
     
     def on_mousewheel_zoom(self, event):
-        """Handle trackpad/mouse wheel for zooming"""
+        """Handle trackpad/mouse wheel for zooming with better performance"""
+        old_zoom = self.zoom_level
+        
         # Determine zoom direction based on event type and delta
         if event.num == 4 or (hasattr(event, 'delta') and event.delta > 0):
             self.zoom_level *= 1.1  # Zoom in
@@ -544,15 +685,28 @@ class PDFViewer:
             self.zoom_level *= 0.9  # Zoom out
             
         # Ensure reasonable zoom limits
-        self.zoom_level = max(0.1, min(10.0, self.zoom_level))
+        self.zoom_level = max(0.2, min(5.0, self.zoom_level))
         
-        # Re-render the page with the new zoom level
-        self.render_page()
+        # Only recalculate if zoom actually changed
+        if old_zoom != self.zoom_level:
+            # Remember current page
+            current_page = self.current_page
+            
+            # Clear photo image cache
+            if hasattr(self, 'photo_images'):
+                self.photo_images = {}
+            
+            # Recalculate page heights and positions
+            self.precalculate_page_heights()
+            
+            # Re-render
+            self.scroll_to_page(current_page)
+            
         return "break"  # Prevent event propagation
     
     def on_mousewheel_scroll(self, event):
-        """Handle mousewheel scrolling"""
-        # Determine scroll direction and amount
+        """Handle mousewheel scrolling with dynamic page loading"""
+        # Existing scroll code
         scroll_amount = 0
         
         # Handle different platforms
@@ -567,7 +721,30 @@ class PDFViewer:
         # Adjust scroll speed
         scroll_units = 2  # Increased for better scrolling speed
         self.canvas.yview_scroll(scroll_amount * scroll_units, "units")
+        
+        # Store current scroll position
+        current_pos = self.canvas.yview()[0]  # Get top position as fraction
+        
+        # Check if we need to update page rendering
+        if abs(current_pos - self.last_scroll_pos) > 0.03:  # Threshold to reduce frequency
+            self.last_scroll_pos = current_pos
+            
+            # Cancel any pending updates to avoid redundant rendering
+            if hasattr(self, 'after_id'):
+                try:
+                    self.root.after_cancel(self.after_id)
+                except:
+                    pass
+                    
+            # Schedule a new update
+            self.after_id = self.root.after(50, self.delayed_render_update)
+            
         return "break"  # Prevent event propagation
+    
+    def delayed_render_update(self):
+        """Update visible pages and render with a slight delay to prevent too frequent updates"""
+        self.update_visible_pages()
+        self.render_page()
     
     def scroll_start(self, event):
         """Start scrolling with middle mouse button"""
@@ -578,18 +755,14 @@ class PDFViewer:
         self.canvas.scan_dragto(event.x, event.y, gain=1)
     
     def prev_page(self):
-        """Go to previous page"""
+        """Go to previous page - now handled by slider and scrolling"""
         if self.doc and self.current_page > 0:
-            self.current_page -= 1
-            self.update_page_label()
-            self.render_page()
+            self.scroll_to_page(self.current_page - 1)
     
     def next_page(self):
-        """Go to next page"""
+        """Go to next page - now handled by slider and scrolling"""
         if self.doc and self.current_page < self.total_pages - 1:
-            self.current_page += 1
-            self.update_page_label()
-            self.render_page()
+            self.scroll_to_page(self.current_page + 1)
     
     def update_page_label(self):
         """Update the page counter label"""
@@ -597,14 +770,61 @@ class PDFViewer:
             self.page_label.config(text=f"Page: {self.current_page + 1}/{self.total_pages}")
     
     def zoom_in(self):
-        """Increase zoom level"""
+        """Increase zoom level with better performance"""
+        old_zoom = self.zoom_level
         self.zoom_level *= 1.25
-        self.render_page()
+        self.zoom_level = min(5.0, self.zoom_level)  # Lower maximum zoom for stability
+        
+        # Only recalculate if zoom actually changed
+        if old_zoom != self.zoom_level:
+            # Remember current page
+            current_page = self.current_page
+            
+            # Reset rendering flag
+            self.is_rendering = False
+            
+            # Clear photo image cache completely when zooming
+            if hasattr(self, 'photo_images'):
+                self.photo_images = {}
+            
+            # Recalculate page heights and positions
+            self.precalculate_page_heights()
+            
+            # Re-render
+            self.scroll_to_page(current_page)
     
     def zoom_out(self):
-        """Decrease zoom level"""
+        """Decrease zoom level with better performance"""
+        old_zoom = self.zoom_level
         self.zoom_level *= 0.8
-        self.render_page()
+        self.zoom_level = max(0.2, self.zoom_level)  # Higher minimum zoom for usability
+        
+        # Only recalculate if zoom actually changed
+        if old_zoom != self.zoom_level:
+            # Remember current page
+            current_page = self.current_page
+            
+            # Reset rendering flag
+            self.is_rendering = False
+            
+            # Clear photo image cache completely when zooming
+            if hasattr(self, 'photo_images'):
+                self.photo_images = {}
+            
+            # Recalculate page heights and positions
+            self.precalculate_page_heights()
+            
+            # Re-render
+            self.scroll_to_page(current_page)
+    
+    # Remove render_page_segment method as it's no longer needed
+    def render_page_segment(self, page, zoom_matrix, segment='full'):
+        """Legacy method - keeping as stub for compatibility"""
+        page_rect = page.rect
+        clip = page_rect
+        pix = page.get_pixmap(matrix=zoom_matrix)
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        return img, pix.height, []  # Return empty text blocks list
 
 def main():
     root = tk.Tk()
