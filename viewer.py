@@ -608,7 +608,7 @@ class PDFViewer:
 
 def main():
     root = tk.Tk()
-    pdf_path = 'pdfs/Dataset_Second.pdf'
+    pdf_path = 'pdfs/2403.07721v7.pdf'
     
     # Check if a file path was provided as a command-line argument
     if len(sys.argv) > 1:
