@@ -277,12 +277,12 @@ class PDFViewer:
             )
             
             # Draw a separator line after each page (except the last one)
-            if page_num < self.total_pages - 1:
-                separator_y = y_offset + height + self.page_spacing // 2
-                self.canvas.create_line(
-                    0, separator_y, max_width, separator_y,
-                    fill="#CCCCCC", width=2
-                )
+            # if page_num < self.total_pages - 1:
+            #     separator_y = y_offset + height + self.page_spacing // 2
+            #     self.canvas.create_line(
+            #         0, separator_y, max_width, separator_y,
+            #         fill="#CCCCCC", width=2
+            #     )
         
         # Set scrollregion to the size of the entire document
         self.canvas.config(scrollregion=(0, 0, max_width, total_height))
