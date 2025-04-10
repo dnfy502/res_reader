@@ -283,7 +283,7 @@ class PDFViewer:
             #         0, separator_y, max_width, separator_y,
             #         fill="#CCCCCC", width=2
             #     )
-        
+            
         # Set scrollregion to the size of the entire document
         self.canvas.config(scrollregion=(0, 0, max_width, total_height))
         
