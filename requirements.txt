@@ -2,6 +2,12 @@ langchain>=0.1.0
 langchain_community>=0.0.13
 langchain_google_genai>=0.0.5
 google-generativeai>=0.3.0
-faiss-cpu
-PyPDF2
-numpy
+faiss-cpu>=1.7.4
+PyPDF2>=3.0.0
+numpy>=1.24.0
+Pillow>=10.0.0
+PyMuPDF>=1.23.0
+torch>=2.0.0
+diffusers>=0.24.0
+transformers>=4.36.0
+accelerate>=0.25.0
